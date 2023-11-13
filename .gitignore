@@ -1,0 +1,16 @@
+# output files
+out
+
+# notebooks
+notebook
+
+# PyFmi files
+*.txt
+*.mat
+
+# IDE and python files
+.idea
+*.pytest_cache*
+*__pycache__*
+*.ipynb_checkpoints*
+.vscode
