@@ -1,9 +1,10 @@
 from env_loop import test_and_report
 from time import gmtime, strftime
 from env.model_variable import ModelVariable
+from env.simulation import FMUSimulation, TUMLabSimulation
 from util.functions import k_to_c, c_to_k, j_to_kwh, min_to_s, times_kilo, through_kilo, kwh_to_j, sin_encode_hour, cos_encode_hour, sin_encode_day, cos_encode_day
 
-from env.house2 import House2Env
+from env.house2 import House2Env, House2HPand3WVEnv
 
 from util.log_helpers import setup_logging_directory
 
@@ -115,12 +116,19 @@ logger.root.setup(
     log_tb_interval=LOG_TB_INTERVAL)
 logger.log_dir = log_dir
 
-
-test_env = House2Env(
+fmu_sim = FMUSimulation(
     fmu_path=FMU_PATH,
+    ncp=NCP
+)
+
+tum_sim = TUMLabSimulation(
+    url = 'opc.tcp://localhost:49580'
+)
+
+test_env = House2HPand3WVEnv(
+    simulation=fmu_sim,
     prices_path=PRICES_PATH,
     time_step=TIME_STEP,
-    ncp=NCP,
     env_length=TEST_ENV_LENGTH,
     r_max=R_MAX,
     normalize_obs=NORMALIZE_OBS,

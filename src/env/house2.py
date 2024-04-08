@@ -1,8 +1,10 @@
+import time
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Tuple, Union, Optional
 from gymnasium import Env, spaces
 from pyfmi import load_fmu
+from env.simulation import Simulation, SimulationResult
 
 from util.functions import *
 from env.model_variable import ModelVariable
@@ -45,19 +47,16 @@ class House2Env(Env):
     
     def __init__(
         self,
-        fmu_path:str,
-        fmu_type:str = "CS",
+        simulation: Simulation,
         price_config:Dict = {},
         observation_vars:List[ModelVariable] = [],
         parameter_vars:List[ModelVariable] = [],
         informative_vars:List[ModelVariable] = [],
         time_step:int = 900,
-        ncp:int = 15,
         env_length:int = 1440,
         r_max:int = 4,
         normalize_obs:bool = True,
-        prices_path:str = "",
-        fmu_log_level:int = 2
+        prices_path:str = ""
     ):
         """OpenAI Gym environment for the ProHMo House2 FMU.
         Args:
@@ -83,9 +82,9 @@ class House2Env(Env):
         self.r_max = r_max
         self.normalize_obs = normalize_obs
         self.observation_vars = observation_vars
-        self.fmu_param_keys = [v.name for v in parameter_vars]
-        self.fmu_param_vals = [v.conv_calc(v.value) for v in parameter_vars]
-        self.fmu_input_keys = [v.name for v in self.action_vars]
+        self.sim_param_keys = [v.name for v in parameter_vars]
+        self.sim_param_vals = [v.conv_calc(v.value) for v in parameter_vars]
+        self.sim_input_keys = [v.name for v in self.action_vars]
         self.informative_vars = informative_vars
         
         # kW calculation for energy variables
@@ -109,12 +108,7 @@ class House2Env(Env):
             }
         
         # Create FMU
-        self.fmu = load_fmu(fmu_path, kind=fmu_type, log_level=fmu_log_level)
-        
-        # Simulation options for FMU
-        self.fmu_opts = self.fmu.simulate_options()
-        self.fmu_opts['ncp'] = ncp
-        self.fmu_opts['initialize'] = False
+        self.simulation = simulation
         
         # Gym variables.
         self.observation_space = self._get_observation_space()
@@ -167,8 +161,10 @@ class House2Env(Env):
         """
         obs = []
         for feature in self.observation_vars:
-            val = self.sim_result.final(feature.name) if feature.type == "fmu" \
-                else self._get_current_e_price(feature.name)
+            if feature.type == "sim":
+                val = self.sim_result.final(feature.name) 
+            else: 
+                val = self._get_current_e_price(feature.name)
             if feature.name in self.var_buffer:
                 val -= self.var_buffer[feature.name]
             val = feature.conv_calc(val)
@@ -211,8 +207,7 @@ class House2Env(Env):
         """Execute environment simulation for the given time step.
         """
         logger.debug(f"Start simulating for [{self.start}, {self.stop}]")
-        with suppress_stdout():
-            self.sim_result = self.fmu.simulate(start_time=self.start, final_time=self.stop, options=self.fmu_opts)
+        self.sim_result = self.simulation.simulate(start_time=self.start, final_time=self.stop)
         self.start = self.stop
         self.stop = self.start + self.time_step
         self.observation = self._get_current_obs()
@@ -230,7 +225,7 @@ class House2Env(Env):
         e_pv = self._get_converted_value_from(self.o_pv_e)
         hp_starts = self._get_converted_value_from(self.o_hp_starts)
         hp_operation_hours = self._get_converted_value_from(self.o_hp_runtime)
-        
+
         report = {
             "Electricity consumption": -e_supply,
             "Electricity production": -e_feed,
@@ -250,8 +245,8 @@ class House2Env(Env):
         """
         
         self.observation_space
-        obs_details = {v.name:list(self.sim_result[v.name]) \
-            for v in self.observation_vars + self.informative_vars if v.type == "fmu"}
+        obs_details = {v.name:list([self.sim_result.final(v.name)]) \
+            for v in self.observation_vars + self.informative_vars if v.type == "sim"}
 
         if self.is_dr:
             el_price_buy, el_price_sell = self._get_current_e_price(self.o_price_el_buy.name), self._get_current_e_price(self.o_price_el_sell.name) # [EUR/kWh]
@@ -261,13 +256,13 @@ class House2Env(Env):
         return obs_details
     
     
-    def _fmu_gim_step(self, controls:List[float]) -> Tuple[List[float], float, bool, bool, Dict[str, any]]:
+    def _simulation_gim_step(self, controls:List[float]) -> Tuple[List[float], float, bool, bool, Dict[str, any]]:
         """Runs the building for one time step with the given controls and
         returns the results in OpenAI Gym API format.
         Args -- controls: List of the control values for the FMU.
         """
         # Simulate with given actions.
-        self.fmu.set(self.fmu_input_keys, controls)
+        self.simulation.set(self.sim_input_keys, controls)
         self._simulate()
         
         # Calculate reward of the current building state.
@@ -291,7 +286,7 @@ class House2Env(Env):
     def standard_control_step(self) -> Tuple[List[float], float, bool, bool, Dict[str, any]]:
         """Runs the building for one time step with standard control.
         """
-        return self._fmu_gim_step(self.std_control_action)
+        return self._simulation_gim_step(self.std_control_action)
     
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None,) -> Tuple[List[float], dict]:
@@ -306,16 +301,16 @@ class House2Env(Env):
         self.constraint_violations = 0
         self.total_electricity_costs = 0
         
-        # Reset fmu.
-        self.fmu.reset()
+        # Reset simulation.
+        self.simulation.reset()
         
         # Init environment.
-        self.fmu.set(self.fmu_param_keys, self.fmu_param_vals)
-        self.fmu.initialize()
+        self.simulation.set(self.sim_param_keys, self.sim_param_vals)
+        self.simulation.initialize()
 
         # Get initial observation
         self.start, self.stop = 0, 0
-        self.fmu.set(self.fmu_input_keys, self.std_control_action)
+        self.simulation.set(self.sim_input_keys, self.std_control_action)
         self._simulate()
 
         return self.observation, {}
@@ -326,6 +321,7 @@ class House2Env(Env):
         """
         raise NotImplementedError("This method must be implemented by a subclass.")
     
+    
 
 class House2HPand3WVEnv(House2Env):
     
@@ -333,33 +329,28 @@ class House2HPand3WVEnv(House2Env):
     
     
     def __init__(self,
-     fmu_path: str,
-     fmu_type: str = "CS",
+     simulation: Simulation,
      price_config: Dict = {},
      observation_vars: List[ModelVariable] = [],
      parameter_vars: List[ModelVariable] = [],
      informative_vars: List[ModelVariable] = [],
      time_step: int = 900,
-     ncp: int = 15,
      env_length: int = 1440,
      r_max: int = 4,
      normalize_obs: bool = True,
-     prices_path: str = "",
-     fmu_log_level: int = 2):
+     prices_path: str = ""):
     
-        super().__init__(fmu_path,
-            fmu_type,
+        super().__init__(
+            simulation,
             price_config,
             observation_vars,
             parameter_vars,
             informative_vars,
             time_step,
-            ncp,
             env_length,
             r_max,
             normalize_obs,
-            prices_path,
-            fmu_log_level)
+            prices_path)
     
     
     def _get_action_space(self) -> spaces.Box:
@@ -390,14 +381,14 @@ class House2HPand3WVEnv(House2Env):
         if    hp_aux_modulation < -0.5: hp_aux_modulation = 0    # aux. at 0 %
         elif  hp_aux_modulation < 0   : hp_aux_modulation = 0.1  # aux. at 33 %
         elif  hp_aux_modulation < 0.5 : hp_aux_modulation = 0.34 # aux. at 67 %
-        else: hp_aux_modulation = 0.68 # aux. at 100 %
+        else:                           hp_aux_modulation = 0.68 # aux. at 100 %
         
         # Mapping for the TS port.
         hp_ts_port = 0 if action[2] < 0 else 1
         
         # Simulate with action array.
         actions = [cb_modulation, hp_modulation, hp_aux_modulation, hp_ts_port, 1, *self.std_control_off]
-        return self._fmu_gim_step(actions)
+        return self._simulation_gim_step(actions)
     
     
     def _calculate_reward(self) -> Tuple[float, Dict[str, Union[float, int]]]:
@@ -448,28 +439,25 @@ class House2HPEnv(House2Env):
     
     
     def __init__(self,
-     fmu_path: str,
-     fmu_type: str = "CS",
+     simulation: Simulation,
      price_config: Dict = {},
      observation_vars: List[ModelVariable] = [],
      parameter_vars: List[ModelVariable] = [],
      informative_vars: List[ModelVariable] = [],
      time_step: int = 900,
-     ncp: int = 15,
      env_length: int = 1440,
      r_max: int = 4,
      normalize_obs: bool = True,
      prices_path: str = "",
      fmu_log_level: int = 2):
     
-        super().__init__(fmu_path,
-            fmu_type,
+        super().__init__(
+            simulation,
             price_config,
             observation_vars,
             parameter_vars,
             informative_vars,
             time_step,
-            ncp,
             env_length,
             r_max,
             normalize_obs,
@@ -508,7 +496,7 @@ class House2HPEnv(House2Env):
         
         # Simulate with action array.
         actions = [cb_modulation, hp_modulation, hp_aux_modulation, 0, 1, *self.std_control_off]
-        return self._fmu_gim_step(actions)
+        return self._simulation_gim_step(actions)
     
     
     def _calculate_reward(self) -> Tuple[float, Dict[str, Union[float, int]]]:

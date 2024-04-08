@@ -1,6 +1,7 @@
 from env_loop import test_and_report
 from time import gmtime, strftime
 from env.model_variable import ModelVariable
+from env.simulation import FMUSimulation
 from util.functions import k_to_c, c_to_k, j_to_kwh, min_to_s, times_kilo, through_kilo, kwh_to_j, sin_encode_hour, cos_encode_hour, sin_encode_day, cos_encode_day
 
 from env.house2 import House2Env
@@ -109,12 +110,15 @@ logger.root.setup(
     log_tb_interval=LOG_TB_INTERVAL)
 logger.log_dir = log_dir
 
+test_sim = FMUSimulation(
+    fmu_path=FMU_PATH,
+    ncp=NCP
+)
 
 test_env = House2Env(
-    fmu_path=FMU_PATH,
+    simulation=test_sim,
     prices_path=PRICES_PATH,
     time_step=TIME_STEP,
-    ncp=NCP,
     env_length=TEST_ENV_LENGTH,
     r_max=R_MAX,
     normalize_obs=NORMALIZE_OBS,

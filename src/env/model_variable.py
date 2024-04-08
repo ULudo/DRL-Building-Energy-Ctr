@@ -14,7 +14,7 @@ class ModelVariable:
         conv_calc:Callable=None,
         bounds:list=None,
         take_delta:bool=False,
-        type:str="fmu"
+        type:str="sim"
     ) -> None:
         """
         Args:
